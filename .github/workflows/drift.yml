@@ -1,0 +1,44 @@
+name: drift
+
+# Runs driftcheck against a public API on a schedule and publishes the result
+# (a styled HTML report + a shields.io badge) to GitHub Pages. The badge — not the
+# job status — carries pass/fail, so the page always publishes even when drift is found.
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # daily at 06:17 UTC (off the :00 mark)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Run driftcheck and build the site
+        run: |
+          mkdir -p site
+          uv run driftcheck check --config demo/config.yaml --format html --output site/index.html || true
+          uv run driftcheck check --config demo/config.yaml --format json --output site/report.json || true
+          uv run python demo/make_badge.py site/report.json site/badge.json
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4

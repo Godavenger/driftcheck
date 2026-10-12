@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtualenv / uv
+.venv/
+venv/
+
+# Test / coverage
+.pytest_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Tooling
+.mypy_cache/
+.DS_Store
+
+# Local run artifacts (the live demo publishes these from CI, not from the repo)
+/site/report.json
+/site/index.md
+/site/index.html
+/site/badge.json
+
+# Secrets / local env
+.env
+*.local.yaml
+
+# Claude Code local config
+.claude/
+
+# Local planning docs — kept out of the public repo by default (remove these two
+# lines if you'd like to publish them)
+/BUILD_PIPELINE.md
+/API-Contract-Drift-Detector-Guide.pdf
+
+# The profile README lives in its own repo (Godavenger/Godavenger), pushed separately
+/profile-readme/

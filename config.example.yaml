@@ -1,0 +1,16 @@
+# Example driftcheck config. Copy to config.yaml and edit for your API.
+spec: https://petstore3.swagger.io/api/v3/openapi.json
+base_url: https://petstore3.swagger.io/api/v3
+
+# Only set this if the API needs a token. The value is the NAME of an environment
+# variable holding the token (never put the token itself in this file).
+auth_header_env: null          # e.g. API_TOKEN
+auth_header_name: Authorization
+timeout_seconds: 10.0
+
+endpoints:
+  - name: find-pets-available
+    path: /pet/findByStatus
+    query_params: { status: available }
+  - name: inventory
+    path: /store/inventory

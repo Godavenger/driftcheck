@@ -1,0 +1,13 @@
+# Live demo target: Swagger Petstore v3 — a public, keyless OpenAPI 3 API.
+# The scheduled GitHub Action runs driftcheck against this and publishes the result.
+spec: https://petstore3.swagger.io/api/v3/openapi.json
+base_url: https://petstore3.swagger.io/api/v3
+auth_header_env: null
+timeout_seconds: 15.0
+
+endpoints:
+  - name: find-pets-by-status
+    path: /pet/findByStatus
+    query_params: { status: available }
+  - name: store-inventory
+    path: /store/inventory
