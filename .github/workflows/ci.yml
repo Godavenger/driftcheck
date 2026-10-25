@@ -2,18 +2,31 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
   pull_request:
+
+permissions:
+  contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ['3.11', '3.12', '3.13']
+        include:
+          - os: windows-latest
+            python: '3.12'
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv sync
+          python-version: ${{ matrix.python }}
+      - run: uv sync --locked
       - run: uv run ruff check .
       - run: uv run ruff format --check .
-      - run: uv run pytest
+      - run: uv run pytest --cov=driftcheck --cov-report=term-missing --cov-fail-under=85
+      - run: uv build

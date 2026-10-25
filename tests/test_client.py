@@ -1,6 +1,7 @@
 """Tests for driftcheck.client.call_endpoint (all HTTP mocked with respx)."""
 
 import httpx
+import pytest
 import respx
 
 from driftcheck.client import call_endpoint
@@ -80,18 +81,19 @@ def test_auth_header_added_when_env_var_has_value(monkeypatch):
         assert route.calls.last.request.headers["X-API-Key"] == "secret-abc"
 
 
-def test_no_auth_header_when_env_var_unset(monkeypatch):
-    """When the named env var is unset, no auth header is sent."""
+def test_missing_auth_environment_does_not_send_unauthenticated_request(monkeypatch):
+    """A configured missing credential is an error before a request is sent."""
     monkeypatch.delenv("DRIFT_TOKEN", raising=False)
     with respx.mock(assert_all_called=False) as router:
         route = router.get(f"{BASE}/pet/1").mock(return_value=httpx.Response(200, json={}))
         config = _config(auth_header_env="DRIFT_TOKEN", auth_header_name="X-API-Key")
         check = EndpointCheck(name="get-pet", path="/pet/{petId}", path_params={"petId": "1"})
 
-        call_endpoint(config, check)
+        actual = call_endpoint(config, check)
 
-        assert route.called
-        assert "X-API-Key" not in route.calls.last.request.headers
+        assert not route.called
+        assert actual.status is None
+        assert "DRIFT_TOKEN" in actual.error
 
 
 def test_non_json_body_falls_back_to_text():
@@ -141,3 +143,95 @@ def test_missing_path_param_is_reported_not_raised():
     assert actual.status is None
     assert actual.error is not None
     assert "petId" in actual.error
+
+
+def test_path_parameter_names_are_literal_and_values_are_encoded():
+    check = EndpointCheck(name="lookup", path="/pets/{pet.id}", path_params={"pet.id": "a/b ?#%"})
+    with respx.mock as router:
+        route = router.get(f"{BASE}/pets/a%2Fb%20%3F%23%25").respond(200, json={})
+        actual = call_endpoint(_config(), check)
+    assert actual.status == 200
+    assert route.calls.last.request.url.raw_path == b"/pets/a%2Fb%20%3F%23%25"
+
+
+def test_dot_only_path_parameter_does_not_navigate_to_parent():
+    check = EndpointCheck(name="lookup", path="/pets/{id}", path_params={"id": ".."})
+    with respx.mock as router:
+        route = router.get(f"{BASE}/pets/%2E%2E").respond(200, json={})
+        actual = call_endpoint(_config(), check)
+    assert actual.status == 200
+    assert route.calls.last.request.url.raw_path == b"/pets/%2E%2E"
+
+
+@pytest.mark.parametrize("path", ["/pet/{id", "/pet/id}", "/pet/{}"])
+def test_malformed_path_templates_return_errors(path):
+    actual = call_endpoint(_config(), EndpointCheck(name="lookup", path=path))
+    assert actual.status is None
+    assert "malformed" in actual.error
+
+
+def test_malformed_json_retains_response_metadata():
+    with respx.mock as router:
+        router.get(f"{BASE}/pets").respond(
+            200, text="not JSON", headers={"Content-Type": "Application/JSON; charset=utf-8"}
+        )
+        actual = call_endpoint(_config(), EndpointCheck(name="pets", path="/pets"))
+    assert actual.status == 200
+    assert actual.body == "not JSON"
+    assert actual.body_present
+    assert actual.content_type == "application/json"
+    assert actual.json_error
+    assert actual.error is None
+
+
+def test_plain_text_that_looks_like_json_stays_text():
+    with respx.mock as router:
+        router.get(f"{BASE}/count").respond(200, text="123")
+        actual = call_endpoint(_config(), EndpointCheck(name="count", path="/count"))
+    assert actual.body == "123"
+    assert actual.json_error is None
+
+
+def test_empty_body_is_distinct_from_json_null():
+    with respx.mock as router:
+        router.get(f"{BASE}/empty").respond(204)
+        router.get(f"{BASE}/null").respond(
+            200, content="null", headers={"Content-Type": "application/json"}
+        )
+        empty = call_endpoint(_config(), EndpointCheck(name="empty", path="/empty"))
+        null = call_endpoint(_config(), EndpointCheck(name="null", path="/null"))
+    assert empty.body_present is False
+    assert null.body_present is True
+    assert null.body is None
+    assert null.json_error is None
+
+
+def test_empty_transport_message_is_still_an_error():
+    with respx.mock as router:
+        router.get(f"{BASE}/pets").mock(side_effect=httpx.ConnectError(""))
+        actual = call_endpoint(_config(), EndpointCheck(name="pets", path="/pets"))
+    assert actual.error == "ConnectError"
+
+
+def test_transport_error_does_not_disclose_auth_token(monkeypatch):
+    monkeypatch.setenv("DRIFT_TOKEN", "secret-value")
+    with respx.mock as router:
+        router.get(f"{BASE}/pets").mock(
+            side_effect=httpx.LocalProtocolError("bad header secret-value")
+        )
+        actual = call_endpoint(
+            _config(auth_header_env="DRIFT_TOKEN"), EndpointCheck(name="pets", path="/pets")
+        )
+    assert "secret-value" not in actual.error
+    assert "[redacted]" in actual.error
+
+
+@pytest.mark.parametrize("body", ["NaN", "Infinity", "-Infinity", '{"value":NaN}'])
+def test_nonfinite_json_extensions_are_not_valid_json(body):
+    with respx.mock as router:
+        router.get(f"{BASE}/value").respond(
+            200, content=body, headers={"Content-Type": "application/json"}
+        )
+        actual = call_endpoint(_config(), EndpointCheck(name="value", path="/value"))
+    assert actual.json_error
+    assert actual.error is None

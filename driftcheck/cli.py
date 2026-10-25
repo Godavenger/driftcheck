@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 
 from driftcheck import __version__
+from driftcheck.client import auth_headers
 from driftcheck.config import load_config
 from driftcheck.engine import run
 from driftcheck.errors import ConfigError, SpecError
@@ -23,6 +24,7 @@ from driftcheck.report import (
     render_html,
     render_json,
     render_markdown,
+    write_report_bundle,
 )
 from driftcheck.spec import load_spec
 
@@ -75,16 +77,23 @@ def check(
         "--output",
         help="Write the report to this path instead of stdout.",
     ),
+    report_dir: str | None = typer.Option(
+        None,
+        "--report-dir",
+        help="Write index.html, report.json, and badge.json from this same run into a directory.",
+    ),
 ) -> None:
     """Run the configured checks against the live API and report any drift."""
+    if output and report_dir:
+        raise typer.BadParameter("--output and --report-dir cannot be used together")
     try:
         cfg = load_config(config)
+        auth_headers(cfg)
         spec = load_spec(cfg.spec)
+        report = run(cfg, spec, generated_at=datetime.now(UTC).isoformat())
     except (ConfigError, SpecError) as exc:
         typer.secho(str(exc), fg="red", err=True)
         raise typer.Exit(2) from exc
-
-    report = run(cfg, spec, generated_at=datetime.now(UTC).isoformat())
 
     renderers = {
         OutputFormat.console: render_console,
@@ -94,11 +103,21 @@ def check(
     }
     text = renderers[fmt](report)
 
-    if output:
-        Path(output).write_text(text, encoding="utf-8")
-        typer.echo(f"wrote {output}")
-    else:
-        typer.echo(text)
+    try:
+        if report_dir:
+            write_report_bundle(report, Path(report_dir))
+            typer.echo(text)
+            typer.echo(f"wrote report bundle to {report_dir}", err=True)
+        elif output:
+            out_path = Path(output)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text, encoding="utf-8")
+            typer.echo(f"wrote {output}", err=True)
+        else:
+            typer.echo(text)
+    except OSError as exc:
+        typer.secho(f"could not write report: {exc}", fg="red", err=True)
+        raise typer.Exit(2) from exc
 
     raise typer.Exit(exit_code(report))
 

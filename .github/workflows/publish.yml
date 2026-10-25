@@ -1,0 +1,109 @@
+name: publish
+
+# Publishing is always deliberate: select a version tag, publish to TestPyPI,
+# then run again for PyPI after checking the TestPyPI installation.
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: Package index
+        type: choice
+        required: true
+        default: testpypi
+        options:
+          - testpypi
+          - pypi
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}-${{ inputs.repository }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Check the release version
+        env:
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          uv run python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          from driftcheck import __version__
+
+          version = tomllib.loads(Path("pyproject.toml").read_text())["project"]["version"]
+          assert version == __version__, "Package and CLI versions differ"
+          assert os.environ["RELEASE_REF"] == f"refs/tags/v{version}", (
+              f"Run this workflow from the v{version} tag, not a branch"
+          )
+          PY
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run pytest
+      - run: uv build
+      - run: uvx --from twine twine check --strict dist/*
+      - name: Smoke test the installed wheel outside the checkout
+        run: |
+          uv venv /tmp/driftcheck-release
+          uv pip install --python /tmp/driftcheck-release/bin/python dist/*.whl
+          cd /tmp
+          /tmp/driftcheck-release/bin/driftcheck --version
+          /tmp/driftcheck-release/bin/driftcheck check --help
+      - name: Require identical artifacts on TestPyPI before promotion
+        if: inputs.repository == 'pypi'
+        run: |
+          uv run python - <<'PY'
+          import hashlib
+          import json
+          import tomllib
+          import urllib.request
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          url = f"https://test.pypi.org/pypi/{project['name']}/{project['version']}/json"
+          with urllib.request.urlopen(url, timeout=30) as response:
+              published = json.load(response)
+          hashes = {item["filename"]: item["digests"]["sha256"] for item in published["urls"]}
+          for artifact in Path("dist").iterdir():
+              if artifact.suffix not in {".whl", ".gz"}:
+                  continue
+              digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+              assert hashes.get(artifact.name) == digest, (
+                  f"Publish and verify this exact artifact on TestPyPI first: {artifact.name}"
+              )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.repository }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Publish to TestPyPI
+        if: inputs.repository == 'testpypi'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+      - name: Publish to PyPI
+        if: inputs.repository == 'pypi'
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -9,6 +9,9 @@ dist/
 # Virtualenv / uv
 .venv/
 venv/
+.uv-cache/
+.test-tmp*/
+.verification/
 
 # Test / coverage
 .pytest_cache/

@@ -29,13 +29,16 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-      - run: uv sync
+      - run: uv sync --locked
       - name: Run driftcheck and build the site
+        shell: bash
         run: |
-          mkdir -p site
-          uv run driftcheck check --config demo/config.yaml --format html --output site/index.html || true
-          uv run driftcheck check --config demo/config.yaml --format json --output site/report.json || true
-          uv run python demo/make_badge.py site/report.json site/badge.json
+          status=0
+          uv run driftcheck check --config demo/config.yaml --report-dir site || status=$?
+          # Drift (1) is a valid report to publish. Setup/export failures (2+) aren't.
+          if [ "$status" -gt 1 ]; then
+            exit "$status"
+          fi
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
