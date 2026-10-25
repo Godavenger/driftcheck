@@ -33,7 +33,9 @@ class Config:
 @dataclass
 class ExpectedResponse:
     status: int
-    schema: dict  # JSON Schema for the body
+    schema: dict | bool  # JSON Schema for the body
+    openapi_version: str = "3.1.0"
+    media_type: str | None = None
 
 
 @dataclass
@@ -42,11 +44,14 @@ class ActualResponse:
     body: Any
     elapsed_ms: float
     error: str | None = None  # transport/timeout error, if any
+    content_type: str | None = None  # normalized media type without parameters
+    body_present: bool = True  # distinguishes an empty body from the JSON value null
+    json_error: str | None = None  # malformed JSON, separate from transport failures
 
 
 @dataclass
 class Mismatch:
-    kind: str  # status|type|required|nullable|enum|extra|transport|undocumented_status
+    kind: str  # schema/status/transport kinds, plus body, content_type, and invalid_json
     location: str  # e.g. "$.data[0].price"
     expected: str
     actual: str

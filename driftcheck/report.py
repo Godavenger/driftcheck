@@ -1,7 +1,7 @@
 """Render a :class:`RunReport` to console, JSON, Markdown, or a standalone HTML page.
 
 All renderers are pure: they take a report and return a string (or an int for
-:func:`exit_code`) with no I/O or clock access, so they stay easy to test.
+:func:`exit_code`). The bundle writer saves those renderings from a single run.
 """
 
 from __future__ import annotations
@@ -9,6 +9,9 @@ from __future__ import annotations
 import dataclasses
 import html
 import json
+import re
+from io import StringIO
+from pathlib import Path
 
 from rich.console import Console
 from rich.table import Table
@@ -54,7 +57,7 @@ a{color:inherit}
 
 def render_console(report: RunReport) -> str:
     """Render ``report`` as a plain-text table, drifted rows styled red."""
-    console = Console(record=True, width=120)
+    console = Console(record=True, width=120, file=StringIO(), markup=False, highlight=False)
 
     summary = (
         f"total: {report.total}  "
@@ -94,12 +97,24 @@ def render_markdown(report: RunReport) -> str:
 
     for result in report.results:
         status = "OK" if result.conformant else "DRIFT"
-        lines.append(f"- **{result.name}** ({result.method} {result.path}): {status}")
+        lines.append(
+            f"- **{_markdown_text(result.name)}** "
+            f"({_markdown_text(result.method)} {_markdown_text(result.path)}): {status}"
+        )
         if not result.conformant:
             for m in result.mismatches:
-                lines.append(f"  - {m.kind} - {m.location} - {m.message}")
+                lines.append(
+                    f"  - {_markdown_text(m.kind)} - {_markdown_text(m.location)} "
+                    f"- {_markdown_text(m.message)}"
+                )
 
     return "\n".join(lines)
+
+
+def _markdown_text(value: str) -> str:
+    """Keep endpoint and response data literal in GitHub-rendered Markdown."""
+    text = html.escape(" ".join(value.splitlines()))
+    return re.sub(r"([\\`*_{}\[\]()#!|])", r"\\\1", text)
 
 
 def render_html(report: RunReport) -> str:
@@ -150,3 +165,39 @@ def render_html(report: RunReport) -> str:
 def exit_code(report: RunReport) -> int:
     """Return 0 when nothing drifted, else 1 (process exit convention)."""
     return 0 if report.nonconformant == 0 else 1
+
+
+def render_badge(report: RunReport) -> str:
+    """Render a shields.io endpoint badge using the report's own counts."""
+    if report.total == 0:
+        message, color = "no checks", "lightgrey"
+    elif report.nonconformant == 0:
+        message, color = f"{report.conformant}/{report.total} passing", "brightgreen"
+    else:
+        message, color = f"{report.nonconformant}/{report.total} drifted", "red"
+    return json.dumps(
+        {
+            "schemaVersion": 1,
+            "label": "API conformance",
+            "message": message,
+            "color": color,
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def write_report_bundle(report: RunReport, directory: Path) -> None:
+    """Write an HTML report, JSON report, and badge from exactly one API run.
+
+    File-system errors are deliberately passed to the CLI so a failed export
+    returns an operational error instead of publishing incomplete results.
+    """
+    rendered = {
+        "index.html": render_html(report),
+        "report.json": render_json(report),
+        "badge.json": render_badge(report),
+    }
+    directory.mkdir(parents=True, exist_ok=True)
+    for name, content in rendered.items():
+        (directory / name).write_text(content + "\n", encoding="utf-8")

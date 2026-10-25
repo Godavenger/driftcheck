@@ -10,11 +10,13 @@ response *body* against the *schema*.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
+from openapi_schema_validator import OAS30ReadValidator, OAS31Validator
 
+from driftcheck.errors import SpecError
 from driftcheck.models import ActualResponse, ExpectedResponse, Mismatch
 
 # Map a jsonschema validator keyword to one of our Mismatch.kind values.
@@ -31,15 +33,21 @@ _KEYWORD_KINDS = {
 def validate_response(expected: ExpectedResponse, actual: ActualResponse) -> list[Mismatch]:
     """Return one Mismatch per schema violation found in ``actual.body``.
 
-    The body is validated against ``expected.schema`` using Draft 2020-12. Errors
+    The body is validated using its OpenAPI version's response rules. Errors
     are emitted in a deterministic order (by JSON location, then validator keyword,
     then message). Returns ``[]`` when the body fully conforms to the schema.
     """
-    validator = Draft202012Validator(expected.schema or {})
-    errors = sorted(
-        validator.iter_errors(actual.body),
-        key=lambda error: (_location(error), str(error.validator), error.message),
+    validator_class = (
+        OAS30ReadValidator if expected.openapi_version.startswith("3.0.") else OAS31Validator
     )
+    validator = validator_class(expected.schema)
+    try:
+        errors = sorted(
+            validator.iter_errors(actual.body),
+            key=lambda error: (_location(error), str(error.validator), error.message),
+        )
+    except Exception as exc:
+        raise SpecError(f"Could not validate response schema: {exc}") from exc
     return [_to_mismatch(error) for error in errors]
 
 
@@ -108,10 +116,15 @@ def _actual_for(error: ValidationError, kind: str) -> str:
 def _extra_keys(error: ValidationError) -> str:
     """List the undocumented keys that triggered an additionalProperties error."""
     schema = error.schema if isinstance(error.schema, dict) else {}
-    allowed = set(schema.get("properties", {}))
     instance = error.instance
     if isinstance(instance, dict):
-        extras = sorted(key for key in instance if key not in allowed)
+        allowed = schema.get("properties", {})
+        patterns = schema.get("patternProperties", {})
+        extras = sorted(
+            key
+            for key in instance
+            if key not in allowed and not any(re.search(pattern, key) for pattern in patterns)
+        )
         if extras:
             return ", ".join(extras)
     return "unexpected key"
